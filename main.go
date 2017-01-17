@@ -59,8 +59,6 @@ type credentials struct {
 
 func saveCredentials(role, region string, creds *credentials) error {
 
-	fmt.Printf("export AWS_PROFILE=ho-mfa-%s\n", role)
-
 	// Profile
 	profileFormat := fmt.Sprintf("profile.ho-mfa-%s.region", role)
 	profileArgs := []string{"configure", "set", profileFormat, region}
