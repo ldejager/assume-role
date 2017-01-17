@@ -23,8 +23,8 @@ $ assume-role prod
 MFA code: 123456
 ```
 
-The utility can also be called using `eval` if required;
+From here onwards, you can call other tools like `terraform`, `awscli` etc. with the temporary credentials which has been configured for you under the profile which you've set.
 
-```bash
-$ eval $(assume-role prod)
-```
+## TODO
+
+- Add check for token expiry
