@@ -21,46 +21,79 @@ func usage() {
 }
 
 func main() {
-	if len(os.Args) < 2 {
+
+	if len(os.Args) > 1 {
+		role := os.Args[1]
+
+		config, err := loadConfig()
+		must(err)
+
+		roleConfig, ok := config[role]
+		if !ok {
+			must(fmt.Errorf("%s not in ~/.aws/roles", role))
+		}
+
+		creds, err := assumeRole(roleConfig.IAMProfile, roleConfig.Role, roleConfig.MFA)
+		must(err)
+
+		err = saveCredentials(role, roleConfig.TMPProfile, roleConfig.Region, creds)
+		must(err)
+
+	} else {
 		usage()
 		os.Exit(1)
 	}
-
-	role := os.Args[1]
-
-	config, err := loadConfig()
-	must(err)
-
-	roleConfig, ok := config[role]
-	if !ok {
-		must(fmt.Errorf("%s not in ~/.aws/roles", role))
-	}
-
-	creds, err := assumeRole(roleConfig.Profile, roleConfig.Role, roleConfig.MFA)
-	must(err)
-
-	err = saveCredentials(role, roleConfig.Region, creds)
-	must(err)
 }
 
-func setProfile(role string) error {
+func setProfile(profile string) error {
 
-	profile := fmt.Sprintf("ho-mfa-%s", role)
 	os.Setenv("AWS_PROFILE", profile)
 
 	return syscall.Exec(os.Getenv("SHELL"), []string{os.Getenv("SHELL")}, syscall.Environ())
+}
+
+func saveSession(session, role string) error {
+
+	sessionFilePath := fmt.Sprintf("%s/.aws/session.%s", os.Getenv("HOME"), role)
+
+	current := session
+
+	//timestamp := current.Unix()
+
+	/*
+				int32(time.Now().Unix())
+
+				now := time.Now()
+		    secs := now.Unix()
+		    nanos := now.UnixNano()
+		    fmt.Println(now)
+	*/
+
+	SaveCmd := exec.Command("echo", session, ">", sessionFilePath)
+	if err := SaveCmd.Start(); err != nil {
+		return err
+	}
+
+	if err := SaveCmd.Wait(); err != nil {
+		return err
+	}
+
+	fmt.Println(current)
+
+	return nil
 }
 
 type credentials struct {
 	AccessKeyID     string
 	SecretAccessKey string
 	SessionToken    string
+	Expiration      string
 }
 
-func saveCredentials(role, region string, creds *credentials) error {
+func saveCredentials(role, profile, region string, creds *credentials) error {
 
 	// Profile
-	profileFormat := fmt.Sprintf("profile.ho-mfa-%s.region", role)
+	profileFormat := fmt.Sprintf("profile.%s.region", profile)
 	profileArgs := []string{"configure", "set", profileFormat, region}
 	profileCmd := exec.Command("aws", profileArgs...)
 	if err := profileCmd.Start(); err != nil {
@@ -72,7 +105,7 @@ func saveCredentials(role, region string, creds *credentials) error {
 	}
 
 	// Access Key ID
-	accessKeyIDFormat := fmt.Sprintf("profile.ho-mfa-%s.aws_access_key_id", role)
+	accessKeyIDFormat := fmt.Sprintf("profile.%s.aws_access_key_id", profile)
 	accessKeyIDArgs := []string{"configure", "set", accessKeyIDFormat, creds.AccessKeyID}
 	accessCmd := exec.Command("aws", accessKeyIDArgs...)
 	if err := accessCmd.Start(); err != nil {
@@ -84,7 +117,7 @@ func saveCredentials(role, region string, creds *credentials) error {
 	}
 
 	// Secret Access Key
-	secretAccessKeyFormat := fmt.Sprintf("profile.ho-mfa-%s.aws_secret_access_key", role)
+	secretAccessKeyFormat := fmt.Sprintf("profile.%s.aws_secret_access_key", profile)
 	secretAccessKeyArgs := []string{"configure", "set", secretAccessKeyFormat, creds.SecretAccessKey}
 	secretAccessCmd := exec.Command("aws", secretAccessKeyArgs...)
 	if err := secretAccessCmd.Start(); err != nil {
@@ -96,7 +129,7 @@ func saveCredentials(role, region string, creds *credentials) error {
 	}
 
 	// Session Token
-	sessionTokenFormat := fmt.Sprintf("profile.ho-mfa-%s.aws_session_token", role)
+	sessionTokenFormat := fmt.Sprintf("profile.%s.aws_session_token", profile)
 	sessionTokenArgs := []string{"configure", "set", sessionTokenFormat, creds.SessionToken}
 	sessionTokenCmd := exec.Command("aws", sessionTokenArgs...)
 	if err := sessionTokenCmd.Start(); err != nil {
@@ -107,20 +140,27 @@ func saveCredentials(role, region string, creds *credentials) error {
 		return err
 	}
 
-	setProfile(role)
+	expiration := string(creds.Expiration)
+
+	fmt.Println(expiration)
+
+	saveSession(expiration, role)
+	setProfile(profile)
 
 	return nil
 
 }
 
-func assumeRole(profile, role, mfa string) (*credentials, error) {
+func assumeRole(iamProfile, role, mfa string) (*credentials, error) {
 	args := []string{
+		"--debug",
 		"sts",
 		"assume-role",
-		"--profile", profile,
+		"--profile", iamProfile,
 		"--output", "json",
 		"--role-arn", role,
 		"--role-session-name", "cli",
+		"--query", "[Credentials.AccessKeyId,Credentials.SecretAccessKey,Credentials.SessionToken,Credentials.Expiration]",
 	}
 	if mfa != "" {
 		args = append(args,
@@ -152,10 +192,11 @@ func assumeRole(profile, role, mfa string) (*credentials, error) {
 }
 
 type roleConfig struct {
-	Profile string `yaml:"profile"`
-	Region  string `yaml:"region"`
-	Role    string `yaml:"role"`
-	MFA     string `yaml:"mfa"`
+	IAMProfile string `yaml:"iam_profile"`
+	TMPProfile string `yaml:"tmp_profile"`
+	Region     string `yaml:"region"`
+	Role       string `yaml:"role"`
+	MFA        string `yaml:"mfa"`
 }
 
 type config map[string]roleConfig
