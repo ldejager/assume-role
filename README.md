@@ -10,6 +10,8 @@ The first step is to setup "aliases" of the roles to assume, this is done in a y
 
 ```yaml
 prod:
+  iam_profile:
+  tmp_profile: 
   role: arn:aws:iam::1234:role/SuperUser
   mfa: arn:aws:iam::5678:mfa/username # Enable MFA for this role.
 ```
