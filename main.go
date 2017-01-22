@@ -8,13 +8,16 @@ import (
 	"io/ioutil"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 	"syscall"
+	"time"
 
 	"gopkg.in/yaml.v2"
 )
 
 var configFilePath = fmt.Sprintf("%s/.aws/roles", os.Getenv("HOME"))
+var awsProfile string
 
 func usage() {
 	fmt.Println("Usage: assume-role <role>")
@@ -33,16 +36,36 @@ func main() {
 			must(fmt.Errorf("%s not in ~/.aws/roles", role))
 		}
 
+		cleanEnv()
+
+		if len(roleConfig.TMPProfile) > 0 {
+			awsProfile = roleConfig.TMPProfile
+		} else {
+			awsProfile = role
+		}
+
+		checkSession(role)
+
 		creds, err := assumeRole(roleConfig.IAMProfile, roleConfig.Role, roleConfig.MFA)
 		must(err)
 
-		err = saveCredentials(role, roleConfig.TMPProfile, roleConfig.Region, creds)
+		err = saveCredentials(role, awsProfile, roleConfig.Region, creds)
 		must(err)
 
 	} else {
 		usage()
 		os.Exit(1)
 	}
+}
+
+func checkErr(e error) {
+	if e != nil {
+		panic(e)
+	}
+}
+
+func cleanEnv() {
+	os.Unsetenv("AWS_PROFILE")
 }
 
 func setProfile(profile string) error {
@@ -54,33 +77,51 @@ func setProfile(profile string) error {
 
 func saveSession(session, role string) error {
 
-	sessionFilePath := fmt.Sprintf("%s/.aws/session.%s", os.Getenv("HOME"), role)
+	sessionFilePath := fmt.Sprintf("%s/.aws/session.new.%s", os.Getenv("HOME"), role)
 
-	current := session
+	t, err := time.Parse(time.RFC3339Nano, session)
+	timestamp := t.Unix()
 
-	//timestamp := current.Unix()
-
-	/*
-				int32(time.Now().Unix())
-
-				now := time.Now()
-		    secs := now.Unix()
-		    nanos := now.UnixNano()
-		    fmt.Println(now)
-	*/
-
-	SaveCmd := exec.Command("echo", session, ">", sessionFilePath)
-	if err := SaveCmd.Start(); err != nil {
-		return err
-	}
-
-	if err := SaveCmd.Wait(); err != nil {
-		return err
-	}
-
-	fmt.Println(current)
+	fileHandle, err := os.Create(sessionFilePath)
+	checkErr(err)
+	writer := bufio.NewWriter(fileHandle)
+	defer fileHandle.Close()
+	fmt.Fprintln(writer, timestamp)
+	writer.Flush()
 
 	return nil
+}
+
+func sessionRemaining(a, b int64) string {
+	return strconv.FormatInt(a-b, 10)
+}
+
+func getSession(role string) int64 {
+
+	sessionFilePath := fmt.Sprintf("%s/.aws/session.new.%s", os.Getenv("HOME"), role)
+
+	getTimestamp, err := ioutil.ReadFile(sessionFilePath)
+	checkErr(err)
+
+	timestamp := int64(len(getTimestamp))
+
+	return timestamp
+}
+
+func checkSession(role string) string {
+
+	session := getSession(role)
+	current := time.Now().Unix()
+
+	validatedSession := sessionRemaining(session, current)
+
+	if validatedSession < "0" {
+		return fmt.Sprintf("Session expired, please revalidate")
+	} else {
+		fmt.Sprintf("Session valid")
+		os.Exit(1)
+		return string("1")
+	}
 }
 
 type credentials struct {
@@ -140,11 +181,7 @@ func saveCredentials(role, profile, region string, creds *credentials) error {
 		return err
 	}
 
-	expiration := string(creds.Expiration)
-
-	fmt.Println(expiration)
-
-	saveSession(expiration, role)
+	saveSession(creds.Expiration, role)
 	setProfile(profile)
 
 	return nil
@@ -152,15 +189,14 @@ func saveCredentials(role, profile, region string, creds *credentials) error {
 }
 
 func assumeRole(iamProfile, role, mfa string) (*credentials, error) {
+
 	args := []string{
-		"--debug",
 		"sts",
 		"assume-role",
 		"--profile", iamProfile,
 		"--output", "json",
 		"--role-arn", role,
 		"--role-session-name", "cli",
-		"--query", "[Credentials.AccessKeyId,Credentials.SecretAccessKey,Credentials.SessionToken,Credentials.Expiration]",
 	}
 	if mfa != "" {
 		args = append(args,
@@ -184,11 +220,13 @@ func assumeRole(iamProfile, role, mfa string) (*credentials, error) {
 	}
 
 	var resp struct{ Credentials credentials }
+
 	if err := json.NewDecoder(b).Decode(&resp); err != nil {
 		return nil, err
 	}
 
 	return &resp.Credentials, nil
+
 }
 
 type roleConfig struct {
